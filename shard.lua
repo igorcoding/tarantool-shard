@@ -136,6 +136,7 @@ function raftshard._select_me(space, index, key, opts)
 	
 	return tuples
 end
+function raftshard._select_me_unpack(...) return unpack(self._select_me(...)) end
 
 function raftshard._get_me(space, index, key)
 	-- print('Got _get_me request from', box.session.peer())
@@ -188,7 +189,7 @@ function raftshard.select(space, index, key, opts)
 		if tuples and #tuples > 0 then return tuples end
 		
 	elseif shard_id == self.schema.ALL_SHARDS then
-		local results = self.execute_on_many_shards('box.shard._select_me', space, index, key, opts)
+		local results = self.execute_on_many_shards('box.shard._select_me_unpack', space, index, key, opts)
 		if results == nil then
 			self.utils.error('Timeout exceeded')
 		end
@@ -311,7 +312,7 @@ function raftshard._insert(ttl, space, index, tuple)
 	
 	local shard_id = self.schema:curr(space, index, tuple)
 	
-	if self.pool:curr_is_me_by(shard_id) then
+	if self.pool:curr_is_me_leader_by(shard_id) then
 		return __insert(box, space, tuple)
 	elseif shard_id == self.schema.ALL_SHARDS then
 		self.utils.error('Cannot execute insert on all shards')
@@ -339,7 +340,7 @@ function raftshard._replace(ttl, space, index, tuple)
 	
 	local shard_id = self.schema:curr(space, index, tuple)
 	
-	if self.pool:curr_is_me_by(shard_id) then
+	if self.pool:curr_is_me_leader_by(shard_id) then
 		return __replace(box, space, tuple)
 	elseif shard_id == self.schema.ALL_SHARDS then
 		self.utils.error('Cannot execute replace on all shards')
