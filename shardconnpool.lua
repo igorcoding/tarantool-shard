@@ -6,6 +6,8 @@ local obj = require('obj')
 local uuid = require('uuid')
 local yaml = require('yaml')
 
+local utils = require('shardutils')
+
 local _connpool = require('connpool')
 local pool = obj.class({}, 'shardconnpool', _connpool)
 
@@ -95,7 +97,7 @@ function pool:_init(cfg, schema)
 	self.on_disconnect_one = pool.on_disconnect_one
 	self.on_disconnect = pool.on_disconnect
 	
-	
+	self._self_node_connected_hooker = utils.Hooker()
 	self.__connecting = false
 	self._counts = nil
 end
@@ -194,7 +196,7 @@ function pool:node_state_change(node, state)
 			local schema, shard_id = unpack(role)
 			for _,one in pairs(self.all[schema][shard_id]) do
 				if one == node then
-					error("FATAL! Contact developer. Node "..node.key.." already exists for "..schema.."/"..mode.."/"..shno)
+					error("FATAL! Contact developer. Node "..node.key.." already exists for "..schema.."/"..shard_id)
 				end
 			end
 			table.insert(self.all[schema][shard_id], node)
@@ -203,6 +205,7 @@ function pool:node_state_change(node, state)
 		if not node.connected_once then
 			node.connected_once = true
 			self:_on_node_first_connection(node)
+			-- fiber.create(self._on_node_first_connection, self, node)
 		end
 		
 		self:_on_connected_one(node)
@@ -278,6 +281,8 @@ function pool:connect()
 						end
 						
 						self:node_state_change(node, 'active')
+						self._self_node_connected_hooker(false)
+						self._self_node_connected_hooker:clean()
 						break
 					end
 					
@@ -322,28 +327,35 @@ function pool:connect()
 	end
 end
 
+function pool:add_self_node_connected_cb(f, ...)
+	self._self_node_connected_hooker:add(f, ...)
+end
+
 function pool:_on_node_first_connection(node)
-	if node.rafted then return end -- determining if raft is already initialized for the selected group
+	if node.rafted or node.rafting then return end -- determining if raft is already initialized for the selected group
 	
 	-- N.B.: If current node is not connected then we cannot determine if it is in raft_group or not,
 	-- because uuid in node appears only after successful connect therefore we cannot start any raft in this condition
 	-- This implies that current node MUST be in servers list in configuration.
 	if not self.self_node.connected then
-		log.info('Cannot init raft - current node (%s) is not connected yet.', box.info.server.uuid)
+		log.info('Cannot init raft for node %s - current node (%s) is not connected yet.', node.peer, box.info.server.uuid)
+		self:add_self_node_connected_cb(self._on_node_first_connection, self, node)
 		return
 	end
 	
 	-- getting group that node is in
 	local group_id = node.global_gid
 	local raft_group = self.global_groups[group_id]
+	local self_uuid = box.info.server.uuid
 	
 	log.info('Starting raft init for node: [%s/%s], group_id: %s', node.peer, node.uuid, group_id)
 	
 	-- determining if current node (box.info.server.uuid) is present in selected group
 	local current_node_in_group = false
 	for _,n in ipairs(raft_group) do
+		n.rafting = true
 		if n.uuid ~= nil then
-			if n.uuid == box.info.server.uuid then
+			if n.uuid == self_uuid then
 				current_node_in_group = true
 			end
 		end
@@ -358,6 +370,7 @@ function pool:_on_node_first_connection(node)
 		log.info('Raft is already initialized for group_id=%s', group_id)
 		for _,n in pairs(raft_group) do
 			n.rafted = true
+			n.rafting = false
 			n.raft = self.rafts[group_id]
 		end
 		return
@@ -387,13 +400,15 @@ function pool:_on_node_first_connection(node)
 	-- setting flags that raft is created for each node in the group
 	for _,n in pairs(raft_group) do
 		n.rafted = true
+		n.rafting = false
 		n.raft = raft
 	end
-	
 	self.rafts[group_id] = raft
 	
 	-- starting rafts
 	raft:start()
+	
+	self:_notify_raft_connected_one(raft, node)
 end
 
 -------------- <Node Getters> --------------
@@ -619,21 +634,34 @@ end
 
 -------------- </prev me> --------------
 
+function pool:_notify_raft_connected_one(raft, node)
+	if not node.notified_raft_connected then
+		log.info("[pool.on_connected_one] Calling raft:on_connected_one on node %s connected", node.peer)
+		raft:_pool_on_connected_one(node)
+		node.notified_raft_connected = true
+	end
+	
+	for _,n in pairs(self.global_groups[global_gid]) do
+		if n.connected and not n.notified_raft_connected then
+			raft:_pool_on_connected_one(n)
+			n.notified_raft_connected = true
+		end
+	end
+end
+
+function pool:_notify_raft_disconnected_one(raft, node)
+	if node.notified_raft_connected then
+		log.info("[pool.on_disconnected_one] Calling raft:on_disconnected_one on node %s disconnected", node.peer)
+		raft:_pool_on_disconnect_one(node)
+		node.notified_raft_connected = nil
+	end
+end
 
 function pool:_on_connected_one(node)
 	local global_gid = node.global_gid
 	local raft = self.rafts[global_gid]
 	if raft ~= nil then
-		log.info("[pool.on_connected_one] Calling raft:on_connected_one on node %s connected", node.peer)
-		raft:_pool_on_connected_one(node)
-		node.notified_raft_connected = true
-		
-		for _,n in pairs(self.global_groups[global_gid]) do
-			if n.connected and n.notified_raft_connected == nil then
-				raft:_pool_on_connected_one(n)
-				n.notified_raft_connected = true
-			end
-		end
+		self:_notify_raft_connected_one(raft, node)
 	else
 		log.warn("[pool.on_connected_one] Raft for group %s not found", global_gid)
 	end
@@ -643,9 +671,7 @@ function pool:_on_disconnect_one(node)
 	local global_gid = node.global_gid
 	local raft = self.rafts[global_gid]
 	if raft ~= nil then
-		log.info("[pool.on_disconnected_one] Calling raft:on_disconnected_one on node %s disconnected", node.peer)
-		raft:_pool_on_disconnect_one(node)
-		node.notified_raft_connected = nil
+		self:_notify_raft_disconnected_one(raft, node)
 	else
 		log.warn("[pool.on_disconnect_one] Raft for group %s not found", global_gid)
 	end

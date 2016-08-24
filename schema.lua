@@ -23,6 +23,7 @@ function M:configure(cfg)
 	
 	self.curr_list = cl
 	self.curr_func = cf
+	self.curr_length = #self.curr_list
 	
 	self.curr = function(self, space, index, key)
 		if not ((index == 'primary' or index == 0) and key ~= nil and #key > 0) then
@@ -42,15 +43,28 @@ function M:configure(cfg)
 		end
 	end
 	
-	self.prev_list = pl
-	self.prev_func = prev_func
-	
-	
-	self.curr_length = #self.curr_list
-	if self.prev_list ~= nil then
+	if pl and pf then
+		self.prev_list = pl
+		self.prev_func = pf
 		self.prev_length = #self.prev_list
-	else
-		self.prev_length = 0
+		
+		self.prev = function(self, space, index, key)
+			if not ((index == 'primary' or index == 0) and key ~= nil and #key > 0) then
+				return self.ALL_SHARDS
+			end
+			
+			local shard_id = self.prev_func(self, space, index, key)
+			if shard_id == nil then  -- choosing random shard
+				shard_id = math.random(1, #self.prev_list)
+				return shard_id
+			end
+			print('shard_id: ' .. tostring(shard_id))
+			if shard_id > 0 and shard_id <= #self.prev_list then
+				return shard_id
+			else
+				error("prev function returned wrong shard no: "..tostring(shno).."; avail range is: [1.."..tostring(#self.prev_list))
+			end
+		end
 	end
 	
 	self.global_group_peers = {}

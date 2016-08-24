@@ -1,6 +1,9 @@
 local bh = require('binaryheap')
+local fiber = require('fiber')
 local log = require('log')
 local yaml = require('yaml')
+
+local obj = require('obj')
 
 local utils = {}
 
@@ -179,7 +182,32 @@ function utils.merge_tuples(results, space, index, ...)
 end
 
 
+local Hooker = obj.class({
+	hooks = {},
+	__call = function(self, separate_fiber)
+		local hooks = self.hooks
+		log.info('Hooker call on %d functions', #hooks)
+		separate_fiber = separate_fiber or false
+		for _,h in ipairs(hooks) do
+			f, args = unpack(h)
+			if separate_fiber then
+				fiber.create(f, unpack(args))
+			else
+				f(unpack(args))
+			end
+		end
+	end
+}, 'Hooker')
 
+function Hooker:add(f, ...)
+	self.hooks[#self.hooks + 1] = {f, {...}}
+end
+
+function Hooker:clean()
+	self.hooks = {}
+end
+
+utils.Hooker = Hooker
 
 
 return utils
