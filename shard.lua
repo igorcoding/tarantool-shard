@@ -120,13 +120,25 @@ local function __delete(conn, space, index, key)
 end
 
 
-function raftshard._select_me(space, index, key, opts)
+function raftshard._select_me(schema, space, index, key, opts)
 	-- print('Got _select_me request from', box.session.peer())
 	local tuples = __select(box, space, index, key, opts)
 	if tuples and #tuples ~= 0 then return tuples end
 	
-	if not self.pool:curr_is_me_leader() then
-		local node = self.pool:curr_get_my_leader()
+	local is_leader
+	local get_leader
+	if schema == 'curr' then
+		is_leader = self.pool.curr_is_me_leader
+		get_leader = self.pool.curr_get_my_leader
+	elseif schema == 'prev' then
+		is_leader = self.pool.prev_is_me_leader
+		get_leader = self.pool.prev_get_my_leader
+	else
+		self.utils.error('Unknown schema name: %s. Valid values are: [curr, prev]', schema)
+	end
+	
+	if not is_leader(self.pool) then
+		local node = get_leader(self.pool)
 		if node then
 			tuples = __select(node.conn, space, index, key, opts)
 		end
@@ -138,13 +150,25 @@ function raftshard._select_me(space, index, key, opts)
 end
 function raftshard._select_me_unpack(...) return unpack(self._select_me(...)) end
 
-function raftshard._get_me(space, index, key)
+function raftshard._get_me(schema, space, index, key)
 	-- print('Got _get_me request from', box.session.peer())
 	local tuple = __get(box, space, index, key)
 	if tuple then return tuple end
+	
+	local is_leader
+	local get_leader
+	if schema == 'curr' then
+		is_leader = self.pool.curr_is_me_leader
+		get_leader = self.pool.curr_get_my_leader
+	elseif schema == 'prev' then
+		is_leader = self.pool.prev_is_me_leader
+		get_leader = self.pool.prev_get_my_leader
+	else
+		self.utils.error('Unknown schema name: %s. Valid values are: [curr, prev]', schema)
+	end
 		
-	if not self.pool:curr_is_me_leader() then
-		local node = self.pool:curr_get_my_leader()
+	if not is_leader(self.pool) then
+		local node = get_leader(self.pool)
 		if node == nil then
 			tuple = __get(node.conn, space, index, key)
 		end
@@ -155,13 +179,25 @@ function raftshard._get_me(space, index, key)
 	return tuple
 end
 
-function raftshard._count_me(space, index, key, opts)
+function raftshard._count_me(schema, space, index, key, opts)
 	-- print('Got _count_me request from', box.session.peer())
 	local count = __count(box, space, index, key)
 	if count and count > 0 then return count end
+	
+	local is_leader
+	local get_leader
+	if schema == 'curr' then
+		is_leader = self.pool.curr_is_me_leader
+		get_leader = self.pool.curr_get_my_leader
+	elseif schema == 'prev' then
+		is_leader = self.pool.prev_is_me_leader
+		get_leader = self.pool.prev_get_my_leader
+	else
+		self.utils.error('Unknown schema name: %s. Valid values are: [curr, prev]', schema)
+	end
 		
-	if not self.pool:curr_is_me_leader() then
-		local node = self.pool:curr_get_my_leader()
+	if not is_leader(self.pool) then
+		local node = get_leader(self.pool)
 		if node == nil then
 			count = __count(node.conn, space, index, key)
 		end
@@ -185,11 +221,11 @@ function raftshard.select(space, index, key, opts)
 	local shard_id = self.schema:curr(space, index, key)
 	
 	if self.pool:curr_is_me_by(shard_id) then
-		local tuples = self._select_me(space, index, key, opts)
+		local tuples = self._select_me('curr', space, index, key, opts)
 		if tuples and #tuples > 0 then return tuples end
 		
 	elseif shard_id == self.schema.ALL_SHARDS then
-		local results = self.execute_on_many_shards('box.shard._select_me_unpack', space, index, key, opts)
+		local results = self.execute_on_many_shards('box.shard._select_me_unpack', 'curr', space, index, key, opts)
 		if results == nil then
 			self.utils.error('Timeout exceeded')
 		end
@@ -214,6 +250,41 @@ function raftshard.select(space, index, key, opts)
 		end
 	end
 	
+	log.info("Fall back to prev schema")
+	if not self.schema.prev then return end
+	
+	shard_id = self.schema:prev(space, index, key)
+	
+	if self.pool:prev_is_me_by(shard_id) then
+		return self._select_me('prev', space, index, key, opts)
+		
+	elseif shard_id == self.schema.ALL_SHARDS then
+		local results = self.execute_on_many_shards('box.shard._select_me_unpack', 'prev', space, index, key, opts)
+		if results == nil then
+			self.utils.error('Timeout exceeded')
+		end
+		local filtered_results = {}
+		for uuid,response in pairs(results) do
+			local success, resp = unpack(response)
+			if not success then
+				self.utils.error(resp)
+			else
+				filtered_results[uuid] = resp
+			end
+		end
+		return self.utils.merge_tuples(filtered_results, space, index, key, opts)
+	else
+		-- not my shard. we need to make request to another shard's leader
+		local node = self.pool:prev_leader_by(shard_id) or self.pool:prev_by(shard_id)
+		if node then
+			local tuples = __select(node.conn, space, index, key, opts)
+			if tuples and #tuples > 0 then return tuples end
+		else
+			self.utils.error('Shard #%d is completely offline', shard_id)
+		end
+	end
+	
+	
 	return box.tuple.new({})
 end
 
@@ -223,11 +294,11 @@ function raftshard.get(space, index, key)
 	local shard_id = self.schema:curr(space, index, key)
 	
 	if self.pool:curr_is_me_by(shard_id) then
-		local tuple = self._get_me(space, index, key)
+		local tuple = self._get_me('curr', space, index, key)
 		if tuple then return tuple end
 		
 	elseif shard_id == self.schema.ALL_SHARDS then
-		local results = self.execute_on_many_shards('box.shard._get_me', space, index, key)
+		local results = self.execute_on_many_shards('box.shard._get_me', 'curr', space, index, key)
 		if results == nil then
 			self.utils.error('Timeout exceeded')
 		end
@@ -257,6 +328,45 @@ function raftshard.get(space, index, key)
 		end
 	end
 	
+	log.info("Fall back to prev schema")
+	if not self.schema.prev then return end
+	
+	
+	local shard_id = self.schema:prev(space, index, key)
+	
+	if self.pool:prev_is_me_by(shard_id) then
+		return self._get_me('prev', space, index, key)
+		
+	elseif shard_id == self.schema.ALL_SHARDS then
+		local results = self.execute_on_many_shards('box.shard._get_me', 'prev', space, index, key)
+		if results == nil then
+			self.utils.error('Timeout exceeded')
+		end
+		
+		local tuple = nil
+		for _,response in pairs(results) do
+			local success, resp = unpack(response)
+			if not success then
+				self.utils.error(resp)
+			else
+				if tuple == nil then
+					tuple = resp
+				else
+					box.error(box.error.MORE_THAN_ONE_TUPLE)
+				end
+			end
+		end
+		return tuple
+	else
+		-- not my shard. we need to make request to another shard's leader
+		local node = self.pool:prev_leader_by(shard_id) or self.pool:prev_by(shard_id)
+		if node then
+			return __get(node.conn, space, index, key)
+		else
+			self.utils.error('Shard #%d is completely offline', shard_id)
+		end
+	end
+	
 	return nil
 end
 
@@ -268,10 +378,10 @@ function raftshard.count(space, index, key, opts)
 	local shard_id = self.schema:curr(space, index, key)
 	
 	if self.pool:curr_is_me_by(shard_id) then
-		local count = self._count_me(space, index, key, opts)
+		local count = self._count_me('curr', space, index, key, opts)
 		if count and count > 0 then return count end
 	elseif shard_id == self.schema.ALL_SHARDS then
-		local results = self.execute_on_many_shards('box.shard._count_me', space, index, key, opts)
+		local results = self.execute_on_many_shards('box.shard._count_me', 'curr', space, index, key, opts)
 		local total_count = 0
 		for _,response in pairs(results) do
 			local success, resp = unpack(response)
@@ -296,6 +406,39 @@ function raftshard.count(space, index, key, opts)
 		end
 	end
 	
+	log.info("Fall back to prev schema")
+	if not self.schema.prev then return end
+	
+	local shard_id = self.schema:prev(space, index, key)
+	
+	if self.pool:prev_is_me_by(shard_id) then
+		local count = self._count_me('prev', space, index, key, opts)
+		if count and count > 0 then return count end
+	elseif shard_id == self.schema.ALL_SHARDS then
+		local results = self.execute_on_many_shards('box.shard._count_me', 'prev', space, index, key, opts)
+		local total_count = 0
+		for _,response in pairs(results) do
+			local success, resp = unpack(response)
+			if not success then
+				self.utils.error(resp)
+			else
+				local count = resp[1][1]
+				if count ~= nil then
+					total_count = total_count + count
+				end
+			end
+		end
+		return total_count
+	else
+		-- not my shard. we need to make request to another shard's leader
+		local node = self.pool:prev_leader_by(shard_id) or self.pool:prev_by(shard_id)
+		if node then
+			return __count(node.conn, space, index, key, opts)
+		else
+			self.utils.error('Shard #%d is completely offline', shard_id)
+		end
+	end
+	
 	return 0
 end
 
@@ -313,6 +456,30 @@ function raftshard._insert(ttl, space, index, tuple)
 	local shard_id = self.schema:curr(space, index, tuple)
 	
 	if self.pool:curr_is_me_leader_by(shard_id) then
+		if self.schema.prev == nil then
+			return __insert(box, space, tuple)
+		end
+		
+		local key = self.utils.extract_key_by_index(space, index, tuple)
+		local tuples = __select(box, space, index, key)
+		local is_index_unique = self.utils.is_index_unique(space, index)
+		if (tuples ~= nil and #tuples ~= 0) and is_index_unique then
+			box.error(box.error.TUPLE_FOUND, index, space)
+		end
+		
+		local prev_shard_id = self.schema:prev(space, index, tuple)
+		if self.pool:curr_is_me_leader_by(shard_id) and self.pool:prev_is_me_leader_by(prev_shard_id) then
+			return __insert(box, space, tuple)
+		end
+		
+		local node = self.pool:prev_leader_by(prev_shard_id)
+		if not node then self.utils.error('Leader of shard #%d is not available ', prev_shard_id) end
+		
+		tuples = __select(node.conn, space, index, key)
+		if (tuples ~= nil and #tuples ~= 0) and is_index_unique then
+			box.error(box.error.TUPLE_FOUND, index, space)
+		end
+		
 		return __insert(box, space, tuple)
 	elseif shard_id == self.schema.ALL_SHARDS then
 		self.utils.error('Cannot execute insert on all shards')
@@ -322,7 +489,7 @@ function raftshard._insert(ttl, space, index, tuple)
 		if node then
 			return unpack(node.conn:call('box.shard._insert', ttl - 1, space, index, tuple))
 		end
-		self.utils.error('Shard #%d leader is not accessible', shard_id)
+		self.utils.error('Leader of shard #%d is not accessible', shard_id)
 	end
 	
 	return unpack({})
@@ -363,9 +530,25 @@ function raftshard._delete(ttl, space, index, key)
 	
 	ttl = tonumber(ttl)
 	
-	local shard_id = self.schema:curr(space, index, tuple)
+	local shard_id = self.schema:curr(space, index, key)
 	
 	if self.pool:curr_is_me_by(shard_id) then
+		local ptuple
+		if self.schema.prev then
+			local prev_shard_id = self.schema:prev(space, index, key)
+			local node = self.pool:prev_leader_by(prev_shard_id)
+			if node and node.conn then
+				ptuple = __delete(node.conn, space, index, key)
+			else
+				log.error("Could not call delete key %s:{ %s } from prev shard %d: not accessible", space, table.concat(key, ' '), prev_shard_id)
+			end
+		end
+		if not ptuple then
+			return __delete(box, space, index, key)
+		else
+			local tuple = __delete(box, space, index, key)
+			return tuple or ptuple
+		end
 		return self._delete_me(space, index, key)
 	elseif shard_id == self.schema.ALL_SHARDS then
 		local results = self.execute_on_many_shards('box.shard._delete_me', space, index, key)

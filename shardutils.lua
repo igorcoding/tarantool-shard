@@ -34,6 +34,21 @@ function utils.extract_key_by_index(space, index, tuple)
 	return key
 end
 
+function utils.is_index_unique(space, index)
+	local space_def = box.space._vspace.index.name:get{space}
+	local space_id = space_def[1]
+	local index_def = box.space._vindex.index.name:get{space_id, index}
+	if index_def == nil then
+		log.error("Couldn't find index '%s' for space '%s'", index, space)
+		return nil
+	end
+	local index_opts = index_def[5]
+	if index_opts == nil or index_opts.unique == nil then
+		return true
+	end
+	return index_opts.unique
+end
+
 
 function utils.merge_tuples(results, space, index, ...)
 	-- merge results according to space and index.

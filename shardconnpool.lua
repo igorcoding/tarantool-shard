@@ -423,6 +423,100 @@ end
 
 -------------- </Node Getters> --------------
 
+-------------- <connections> --------------
+
+function pool:curr_all()
+	return self.all.curr
+end
+
+function pool:curr_leaders()
+	local res = {}
+	for shard_id, _ in ipairs(self.all.curr) do
+		local global_gid = self.global_groups_refs.curr[shard_id]
+		local nodes = self.rafts[global_gid]:get_leader_nodes()
+		res[shard_id] = nodes
+	end
+	return res
+end
+
+function pool:curr_followers()
+	local res = {}
+	for shard_id, _ in ipairs(self.all.curr) do
+		local global_gid = self.global_groups_refs.curr[shard_id]
+		local nodes = self.rafts[global_gid]:get_follower_nodes()
+		res[shard_id] = nodes
+	end
+	return res
+end
+
+function pool:curr_aleaders()
+	local res = {}
+	for shard_id, _ in ipairs(self.all.curr) do
+		local global_gid = self.global_groups_refs.curr[shard_id]
+		local nodes = self.rafts[global_gid]:get_aleader_nodes()
+		res[shard_id] = nodes
+	end
+	return res
+end
+
+function pool:curr_afollowers()
+	local res = {}
+	for shard_id, _ in ipairs(self.all.curr) do
+		local global_gid = self.global_groups_refs.curr[shard_id]
+		local nodes = self.rafts[global_gid]:get_afollower_nodes()
+		res[shard_id] = nodes
+	end
+	return res
+end
+
+
+function pool:prev_all()
+	return self.all.prev
+end
+
+function pool:prev_leaders()
+	local res = {}
+	for shard_id, _ in ipairs(self.all.prev) do
+		local global_gid = self.global_groups_refs.prev[shard_id]
+		local nodes = self.rafts[global_gid]:get_leader_nodes()
+		res[shard_id] = nodes
+	end
+	return res
+end
+
+function pool:prev_followers()
+	local res = {}
+	for shard_id, _ in ipairs(self.all.prev) do
+		local global_gid = self.global_groups_refs.prev[shard_id]
+		local nodes = self.rafts[global_gid]:get_follower_nodes()
+		res[shard_id] = nodes
+	end
+	return res
+end
+
+function pool:prev_aleaders()
+	local res = {}
+	for shard_id, _ in ipairs(self.all.prev) do
+		local global_gid = self.global_groups_refs.prev[shard_id]
+		local nodes = self.rafts[global_gid]:get_aleader_nodes()
+		res[shard_id] = nodes
+	end
+	return res
+end
+
+function pool:prev_afollowers()
+	local res = {}
+	for shard_id, _ in ipairs(self.all.prev) do
+		local global_gid = self.global_groups_refs.prev[shard_id]
+		local nodes = self.rafts[global_gid]:get_afollower_nodes()
+		res[shard_id] = nodes
+	end
+	return res
+end
+
+-------------- </connections> --------------
+
+
 -------------- <curr> --------------
 
 function pool:curr_leaders_by(shard_id)
@@ -436,11 +530,6 @@ function pool:curr_leaders_by(shard_id)
 	end
 	local leaders = self.rafts[global_gid]:get_leader_nodes()
 	return leaders
-end
-
-function pool:curr_leaders(...)
-	local shard_id = self.schema:curr(...)
-	return self:curr_leaders_by(shard_id)
 end
 
 function pool:curr_leader_by(shard_id)
@@ -484,11 +573,6 @@ function pool:prev_leaders_by(shard_id)
 	end
 	local leaders = self.rafts[global_gid]:get_leader_nodes()
 	return leaders
-end
-
-function pool:prev_leaders(...)
-	local shard_id = self.schema:prev(...)
-	return self:prev_leaders_by(shard_id)
 end
 
 function pool:prev_leader_by(shard_id)

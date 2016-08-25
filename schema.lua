@@ -30,7 +30,7 @@ function M:configure(cfg)
 			return self.ALL_SHARDS
 		end
 		
-		local shard_id = self.curr_func(self, space, index, key)
+		local shard_id = self.curr_func(self, self.curr_list, space, index, key)
 		if shard_id == nil then  -- choosing random shard
 			shard_id = math.random(1, #self.curr_list)
 			return shard_id
@@ -53,7 +53,7 @@ function M:configure(cfg)
 				return self.ALL_SHARDS
 			end
 			
-			local shard_id = self.prev_func(self, space, index, key)
+			local shard_id = self.prev_func(self, self.prev_list, space, index, key)
 			if shard_id == nil then  -- choosing random shard
 				shard_id = math.random(1, #self.prev_list)
 				return shard_id
@@ -72,7 +72,7 @@ function M:configure(cfg)
 	self:_setup_global_groups()
 end
 
-function M:shard(key)
+function M:shard(key, n)
 	-- main shards search function (from https://github.com/tarantool/shard/blob/master/shard.lua)
 	local num
 	if type(key) == 'number' then
@@ -80,12 +80,12 @@ function M:shard(key)
 	else
 		num = digest.crc32(key)
 	end
-	local shard_id = 1 + digest.guava(num, #self.curr_list)
+	local shard_id = 1 + digest.guava(num, n)
 	return shard_id
 end
 
-function M.default_extract_key(self, space, index, key)
-	return self:shard(key[1])
+function M.default_extract_key(self, list, space, index, key)
+	return self:shard(key[1], #list)
 end
 
 
