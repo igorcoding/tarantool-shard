@@ -133,10 +133,17 @@ function pool:init_node(srv, cfg)
 			id = nil,
 			raft = nil,
 			is_leader = function(self)
-				if self.raft.is_leader ~= nil then
-					return self.raft:is_leader()
+				if self.raft ~= nil and self.raft.is_leader ~= nil then
+					return self.raft:is_leader(self.uuid)
 				end
 				return false
+			end,
+			status = function(self)
+				if self.connected == nil then
+					return '!'
+				else
+					return self.connected and '+' or '-'
+				end
 			end
 		}
 		self.nodes_by_peer[peer] = node
@@ -155,6 +162,12 @@ function pool:counts()
 		deferred = #self.nodes_by_state.deferred;
 	}
 	return self._counts
+end
+
+function pool:status(peer)
+	local node = self.nodes_by_peer[peer]
+	if not node then return '?' end
+	return node:status()
 end
 
 function pool:_move_node(node, state1, state2)

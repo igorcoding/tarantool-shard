@@ -34,7 +34,7 @@ end
 
 function raftshard.check_configured()
 	if not self.configured then
-		self.utils.error('raftShard is not configured. Please call configure() first.')
+		self.utils.error('raftshard is not configured. Please call configure() first.')
 	end
 end
 
@@ -58,6 +58,89 @@ function raftshard.check_ttl(shard_id, ttl)
 	if ttl <= 0 then
 		self.utils.error("Can't redirect request to shard %d (ttl=0)", shard_id)
 	end
+end
+
+function raftshard.info()
+	local info = {
+		id = box.info.server.id,
+		uuid = box.info.server.uuid,
+		srv = box.cfg.listen,
+		state = self.schema.prev and 'resharding' or 'stable',
+		
+		status = 'unknown',
+		conns = {},
+		rafts = {},
+	}
+	
+	for gid, raft in pairs(self.pool.rafts) do
+		info.rafts[gid] = raft:info(false)
+	end
+	
+	local lists = {
+		curr = self.schema.curr_list,
+		prev = self.schema.prev_list,
+	}
+	
+	local online = {
+		curr = { status = "unknown"; all = 0; connected = 0 };
+		prev = { status = "unknown"; all = 0; connected = 0 };
+	};
+	
+	local total = 0
+	local total_connected = 0
+	for schema, list in pairs(lists) do
+		info.conns[schema] = {}
+		
+		for shard_id, shard in ipairs(list) do
+			info.conns[schema][shard_id] = {}
+			
+			local leaders, others = {}, {}
+			for _,node in ipairs(shard) do
+				local peer = node.uri
+				local node = self.pool:get_by_peer(peer)
+				
+				local to = node:is_leader() and leaders or others
+				local node_status = self.pool:status(peer)
+				total = total + 1
+				online[schema].all = online[schema].all + 1
+				if node_status == '+' then
+					total_connected = total_connected + 1
+					online[schema].connected = online[schema].connected + 1
+				end
+				
+				table.insert(to, { peer; node_status })
+			end
+			
+			if #leaders > 0 then
+				info.conns[schema][shard_id]['leaders'] = leaders
+			end
+			if #others > 0 then
+				info.conns[schema][shard_id]['others'] = others
+			end
+		end
+		
+		if online[schema].all == online[schema].connected then
+			online[schema].status = "online"
+		elseif online[schema].connected == 0 then
+			online[schema].status = "offline"
+		else
+			online[schema].status = "partial"
+		end
+	end
+	
+	info.online = online
+	info.total_peers = total
+	info.total_connected = total_connected
+	if total_connected == total then
+		info.status = "online"
+	elseif total_connected == 0 then
+		info.status = "offline"
+	else
+		info.status = "partial"
+	end
+	
+	
+	return info
 end
 
 
