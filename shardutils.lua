@@ -15,40 +15,64 @@ function utils.error(msg, ...)
 	box.error({reason = tostring(msg)})
 end
 
-function utils.extract_key_by_index(space, index, tuple)
-	local space_def = box.space._vspace.index.name:get{space}
-	local space_id = space_def[1]
-	local index_def = box.space._vindex.index.name:get{space_id, index}
+function utils.get_space(space)
+	local space_def = box.space[space]
+	if space_def == nil then
+		log.error("Couldn't find space '%s'", space)
+		return nil
+	end
+	return space_def
+end
+
+function utils.get_index(space, index)
+	local space_def = utils.get_space(space)
+	if space_def == nil then return nil end
+	
+	local index_def = space_def.index[index]
 	if index_def == nil then
 		log.error("Couldn't find index '%s' for space '%s'", index, space)
 		return nil
 	end
-	
+	return index_def
+end
+
+function utils.extract_key_by_index(space, index, tuple)
+	local index_def = utils.get_index(space, index)
+	if index_def == nil then return nil end
+		
 	local key = {}
 	
-	local index_parts = index_def[6]
+	local index_parts = index_def.parts
 	for _,part_def in ipairs(index_parts) do
-		local field_no = part_def[1] + 1  -- What the heck, Tarantool? Lua tables start from 1, field numbers start from 0 :(
+		local field_no = part_def.fieldno
 		table.insert(key, tuple[field_no])
 	end
 	return key
 end
 
 function utils.is_index_unique(space, index)
-	local space_def = box.space._vspace.index.name:get{space}
-	local space_id = space_def[1]
-	local index_def = box.space._vindex.index.name:get{space_id, index}
-	if index_def == nil then
-		log.error("Couldn't find index '%s' for space '%s'", index, space)
-		return nil
-	end
-	local index_opts = index_def[5]
-	if index_opts == nil or index_opts.unique == nil then
+	local index_def = utils.get_index(space, index)
+	if index_def == nil then return nil end
+	
+	if index_def.unique == nil then
 		return true
 	end
-	return index_opts.unique
+	return index_def.unique
 end
 
+function utils.index_parts_count(space, index)
+	local index_def = utils.get_index(space, index)
+	if index_def == nil then return nil end
+	
+	if index_def.parts == nil then
+		return 0
+	end
+	return #index_def.parts
+end
+
+function utils.tuples_empty(tuples)
+	return not tuples or #tuples == 0
+end
 
 function utils.merge_tuples(results, space, index, ...)
 	-- merge results according to space and index.

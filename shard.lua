@@ -119,6 +119,10 @@ local function __delete(conn, space, index, key)
 	return conn.space[space].index[index]:delete(key)
 end
 
+local function __update(conn, space, index, key, upd)
+	return conn.space[space].index[index]:update(key, upd)
+end
+
 
 function raftshard._select_me(schema, space, index, key, opts)
 	-- print('Got _select_me request from', box.session.peer())
@@ -212,6 +216,10 @@ function raftshard._delete_me(space, index, key)
 	return __delete(box, space, index, key)
 end
 
+function raftshard._update_me(space, index, key, upd)
+	return __update(box, space, index, key, upd)
+end
+
 
 
 function raftshard.select(space, index, key, opts)
@@ -225,9 +233,9 @@ function raftshard.select(space, index, key, opts)
 		if tuples and #tuples > 0 then return tuples end
 		
 	elseif shard_id == self.schema.ALL_SHARDS then
-		local results = self.execute_on_many_shards('box.shard._select_me_unpack', 'curr', space, index, key, opts)
+		local results = self.execute_on_many_shards('curr', 'box.shard._select_me_unpack', 'curr', space, index, key, opts)
 		if results == nil then
-			self.utils.error('Timeout exceeded')
+			box.error(box.error.TIMEOUT)
 		end
 		local filtered_results = {}
 		for uuid,response in pairs(results) do
@@ -259,9 +267,9 @@ function raftshard.select(space, index, key, opts)
 		return self._select_me('prev', space, index, key, opts)
 		
 	elseif shard_id == self.schema.ALL_SHARDS then
-		local results = self.execute_on_many_shards('box.shard._select_me_unpack', 'prev', space, index, key, opts)
+		local results = self.execute_on_many_shards('prev', 'box.shard._select_me_unpack', 'prev', space, index, key, opts)
 		if results == nil then
-			self.utils.error('Timeout exceeded')
+			box.error(box.error.TIMEOUT)
 		end
 		local filtered_results = {}
 		for uuid,response in pairs(results) do
@@ -298,9 +306,9 @@ function raftshard.get(space, index, key)
 		if tuple then return tuple end
 		
 	elseif shard_id == self.schema.ALL_SHARDS then
-		local results = self.execute_on_many_shards('box.shard._get_me', 'curr', space, index, key)
+		local results = self.execute_on_many_shards('curr', 'box.shard._get_me', 'curr', space, index, key)
 		if results == nil then
-			self.utils.error('Timeout exceeded')
+			box.error(box.error.TIMEOUT)
 		end
 		
 		local tuple = nil
@@ -338,9 +346,9 @@ function raftshard.get(space, index, key)
 		return self._get_me('prev', space, index, key)
 		
 	elseif shard_id == self.schema.ALL_SHARDS then
-		local results = self.execute_on_many_shards('box.shard._get_me', 'prev', space, index, key)
+		local results = self.execute_on_many_shards('prev', 'box.shard._get_me', 'prev', space, index, key)
 		if results == nil then
-			self.utils.error('Timeout exceeded')
+			box.error(box.error.TIMEOUT)
 		end
 		
 		local tuple = nil
@@ -381,7 +389,7 @@ function raftshard.count(space, index, key, opts)
 		local count = self._count_me('curr', space, index, key, opts)
 		if count and count > 0 then return count end
 	elseif shard_id == self.schema.ALL_SHARDS then
-		local results = self.execute_on_many_shards('box.shard._count_me', 'curr', space, index, key, opts)
+		local results = self.execute_on_many_shards('curr', 'box.shard._count_me', 'curr', space, index, key, opts)
 		local total_count = 0
 		for _,response in pairs(results) do
 			local success, resp = unpack(response)
@@ -415,7 +423,7 @@ function raftshard.count(space, index, key, opts)
 		local count = self._count_me('prev', space, index, key, opts)
 		if count and count > 0 then return count end
 	elseif shard_id == self.schema.ALL_SHARDS then
-		local results = self.execute_on_many_shards('box.shard._count_me', 'prev', space, index, key, opts)
+		local results = self.execute_on_many_shards('prev', 'box.shard._count_me', 'prev', space, index, key, opts)
 		local total_count = 0
 		for _,response in pairs(results) do
 			local success, resp = unpack(response)
@@ -526,7 +534,7 @@ end
 
 function raftshard.delete(space, index, key) return self._delete(1, space, index, key) end
 function raftshard._delete(ttl, space, index, key)
-	self.check_space(space)
+	self.check_space_and_index(space, index)
 	
 	ttl = tonumber(ttl)
 	
@@ -540,7 +548,7 @@ function raftshard._delete(ttl, space, index, key)
 			if node and node.conn then
 				ptuple = __delete(node.conn, space, index, key)
 			else
-				log.error("Could not call delete key %s:{ %s } from prev shard %d: not accessible", space, table.concat(key, ' '), prev_shard_id)
+				log.error("Could not call delete key %s:%s:{ %s } from prev shard %d: not accessible", space, index, table.concat(key, ' '), prev_shard_id)
 			end
 		end
 		if not ptuple then
@@ -551,7 +559,7 @@ function raftshard._delete(ttl, space, index, key)
 		end
 		return self._delete_me(space, index, key)
 	elseif shard_id == self.schema.ALL_SHARDS then
-		local results = self.execute_on_many_shards('box.shard._delete_me', space, index, key)
+		local results = self.execute_on_many_shards('curr', 'box.shard._delete_me', space, index, key)
 		for _, response in pairs(results) do
 			local success, resp = unpack(response)
 			if not success then
@@ -570,11 +578,78 @@ function raftshard._delete(ttl, space, index, key)
 	return unpack({})
 end
 
+function raftshard.update(space, index, key, upd) return self._update(1, space, index, key, upd) end
+function raftshard._update(ttl, space, index, key, upd)
+	self.check_space_and_index(space, index)
+	ttl = tonumber(ttl)
+	
+	if key == nil then
+		key = {}
+	end
+	
+	local index_parts_count = self.utils.index_parts_count(space, index)
+	if #key ~= index_parts_count then
+		box.error(box.error.EXACT_MATCH, index_parts_count, #key)
+	end
+	
+	local shard_id = self.schema:curr(space, index, key)
+	if self.pool:curr_is_me_leader_by(shard_id) then
+		local tuple = __get(box, space, index, key)
+		
+		if tuple or not self.schema.prev then
+			return __update(box, space, index, key, upd)
+		end
+		
+		local prev_shard_id = self.schema:prev(space, index, key)
+		
+		if self.pool:curr_is_me_leader_by(shard_id) and self.pool:prev_is_me_leader_by(prev_shard_id) then
+			return __update(box, space, index, key, upd)
+		end
+		
+		local node = self.pool:prev_leader_by(prev_shard_id)
+		if node and node.conn then
+			local ptuple = __get(node.conn, space, index, key)
+			if not ptuple then
+				return __update(box, space, index, key, upd)
+			end
+			
+			-- rechek
+			tuple = __get(box, space, index, key)
+			if tuple then
+				return __update(box, space, index, key, upd)
+			end
+			__insert(box, space, index, ptuple)
+			return __update(box, space, index, key, upd)
+		else
+			log.error("Could not call update key %s:%s{ %s } from prev shard %d: not accessible", space, index, table.concat(key, ' '), prev_shard_id)
+		end
+	elseif shard_id == self.schema.ALL_SHARDS then
+		self.utils.error('Cannot perform update on all shards (probably you\'ve tried to update not by primary index)')
+	else
+		self.check_ttl(shard_id, ttl)
+		local node = self.pool:curr_leader_by(shard_id)
+		if node then
+			return unpack(node.conn:call('box.shard._update', ttl - 1, space, index, key, upd))
+		end
+		self.utils.error('Shard #%d leader is not accessible', shard_id)
+	end
+end
 
-function raftshard.execute_on_many_shards(method, space, index, ...)
+
+function raftshard.execute_on_many_shards(schema, method, space, index, ...)
 	local nodes = {}
-	for shard_id = 1, self.schema.curr_length do
-		local node = self.pool:curr_by(shard_id)
+	local length
+	local node_getter
+	if schema == 'curr' then
+		length = self.schema.curr_length
+		node_getter = self.pool.curr_by
+	else
+		length = self.schema.prev_length
+		node_getter = self.pool.prev_by
+	end
+	
+	for shard_id = 1, length do
+		local node = node_getter(self.pool, shard_id)
 		table.insert(nodes, node)
 	end
 	
@@ -609,6 +684,9 @@ local function raftshard_generate_indexing(for_space, for_index)
 		end,
 		delete = function(_, key)
 			return raftshard.delete(for_space, for_index, key)
+		end,
+		update = function(_, key, upd)
+			return raftshard.update(for_space, for_index, key, upd)
 		end,
 	}
 end
