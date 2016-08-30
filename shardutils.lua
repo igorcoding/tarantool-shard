@@ -43,7 +43,7 @@ function utils.extract_key_by_index(space, index, tuple)
 	local key = {}
 	
 	local index_parts = index_def.parts
-	for _,part_def in ipairs(index_parts) do
+	for _,part_def in pairs(index_parts) do
 		local field_no = part_def.fieldno
 		table.insert(key, tuple[field_no])
 	end

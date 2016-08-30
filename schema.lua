@@ -44,6 +44,7 @@ function M:configure(cfg)
 	end
 	
 	if pl and pf then
+		self.mode = "resharding"
 		self.prev_list = pl
 		self.prev_func = pf
 		self.prev_length = #self.prev_list
@@ -65,6 +66,8 @@ function M:configure(cfg)
 				error("prev function returned wrong shard no: "..tostring(shno).."; avail range is: [1.."..tostring(#self.prev_list))
 			end
 		end
+	else
+		self.mode = "stable"
 	end
 	
 	self.global_group_peers = {}

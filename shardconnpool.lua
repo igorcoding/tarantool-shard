@@ -98,6 +98,7 @@ function pool:_init(cfg, schema)
 	self.on_disconnect = pool.on_disconnect
 	
 	self._self_node_connected_hooker = utils.Hooker()
+	self._waiting = {}
 	self.__connecting = false
 	self._counts = nil
 end
@@ -170,6 +171,40 @@ function pool:status(peer)
 	return node:status()
 end
 
+function pool:ready()
+	-- copy-paste logic from shard for 1.5
+	if self._ready_wo then return self._ready_wo_x end -- if ready in loop: while () { ready()}
+	if self._ready then
+		self._ready_put = self._ready_put + 1
+		local x = self._ready:get()
+		return x
+	else
+		self._ready_put = 0
+		self._ready = fiber.channel(10)
+		local x = self:waitonline()
+		self._ready_wo_x = x
+		self._ready_wo = true
+		if self._ready_put > 0 then
+			for i = 1,self._ready_put do
+				self._ready:put(x)
+			end
+		end
+		self._ready = nil
+		return x
+	end
+end
+
+function pool:waitonline()
+	assert(not self._waitonline)
+	if #self._waiting > 0 or not self._waitonline then
+		self._waitonline = fiber.channel(1)
+		local x = self._waitonline:get()
+		return x
+	else
+		return true
+	end
+end
+
 function pool:_move_node(node, state1, state2)
 	if state1 == state2 then
 		log.debug("Tried to move node to the same state as before: %s", state1)
@@ -213,6 +248,22 @@ function pool:node_state_change(node, state)
 				end
 			end
 			table.insert(self.all[schema][shard_id], node)
+		end
+		
+		if #self._waiting > 0 then
+			for _,one in ipairs(self._waiting) do
+				if one == node then
+					table.remove(self._waiting, _)
+					break
+				end
+			end
+			if #self._waiting == 0 then
+				log.info("Cluster completely online")
+				if self._waitonline then
+					self._waitonline:put(true)
+					self._waitonline = nil
+				end
+			end
 		end
 		
 		if not node.connected_once then
@@ -259,6 +310,11 @@ function pool:connect()
 	self.__connecting = true
 	self:on_init()
 	local self_uuid = box.info.server.uuid
+	
+	self._waiting = {}
+	for _, node in pairs(self.nodes_by_peer) do
+		table.insert(self._waiting, node)
+	end
 	
 	for _,node in pairs(self.nodes_by_peer) do
 		node.fiber = fiber.create(function()

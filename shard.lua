@@ -7,6 +7,7 @@ local yaml = require('yaml')
 local connpool = require('shardconnpool')
 local shardutils = require('shardutils')
 local shardschema = require('schema')
+local resharding = require('resharding')
 
 
 local raftshard = {
@@ -24,6 +25,10 @@ function raftshard.configure(cfg)
 	self.pool = connpool(cfg, self.schema)
 	
 	self.configured = true
+	
+	if self.schema.prev then
+		self.resharding = resharding(self.pool, cfg.resharding)
+	end
 end
 
 function raftshard.connect()
@@ -65,7 +70,7 @@ function raftshard.info()
 		id = box.info.server.id,
 		uuid = box.info.server.uuid,
 		srv = box.cfg.listen,
-		state = self.schema.prev and 'resharding' or 'stable',
+		state = self.schema.mode,
 		
 		status = 'unknown',
 		conns = {},
@@ -141,6 +146,10 @@ function raftshard.info()
 	
 	
 	return info
+end
+
+function raftshard.waitonline()
+	return self.pool:ready()
 end
 
 
@@ -701,7 +710,7 @@ function raftshard._update(ttl, space, index, key, upd)
 			if tuple then
 				return __update(box, space, index, key, upd)
 			end
-			__insert(box, space, index, ptuple)
+			__insert(box, space, ptuple)
 			return __update(box, space, index, key, upd)
 		else
 			log.error("Could not call update key %s:%s{ %s } from prev shard %d: not accessible", space, index, table.concat(key, ' '), prev_shard_id)
