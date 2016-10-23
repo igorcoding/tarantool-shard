@@ -12,7 +12,9 @@ function M:_init(cfg)
 	self:configure(cfg)
 end
 
-function M:configure(cfg)
+function M:configure(cfg, shard_index)
+	self.shard_index = shard_index or 'primary'
+	
 	local cl,pl,cf,pf = cfg.curr_list,
 						cfg.prev_list,
 						cfg.func or cfg.curr_func or self.default_extract_key,
@@ -26,7 +28,7 @@ function M:configure(cfg)
 	self.curr_length = #self.curr_list
 	
 	self.curr = function(self, space, index, key)
-		if not ((index == 'primary' or index == 0) and key ~= nil and #key > 0) then
+		if not (index == self.shard_index and key ~= nil and #key > 0) then
 			return self.ALL_SHARDS
 		end
 		
@@ -50,7 +52,7 @@ function M:configure(cfg)
 		self.prev_length = #self.prev_list
 		
 		self.prev = function(self, space, index, key)
-			if not ((index == 'primary' or index == 0) and key ~= nil and #key > 0) then
+			if not (index == self.shard_index and key ~= nil and #key > 0) then
 				return self.ALL_SHARDS
 			end
 			

@@ -21,7 +21,8 @@ function raftshard.configure(cfg)
 	local schema_cfg = cfg.schema
 	cfg.schema = nil
 	
-	self.schema = shardschema(schema_cfg)
+	self.shard_index = cfg.shard_index or 'primary'
+	self.schema = shardschema(schema_cfg, self.shard_index)
 	self.pool = connpool(cfg, self.schema)
 	
 	self.configured = true
@@ -553,7 +554,7 @@ function raftshard._insert(ttl, space, index, tuple)
 	ttl = tonumber(ttl)
 	
 	
-	local shard_id = self.schema:curr(space, index, tuple)
+	local shard_id = self.schema:curr(space, self.shard_index, tuple)  -- getting shard_id for self.shard_index and not primary index
 	
 	if self.pool:curr_is_me_leader_by(shard_id) then
 		if self.schema.prev == nil then
@@ -567,7 +568,7 @@ function raftshard._insert(ttl, space, index, tuple)
 			box.error(box.error.TUPLE_FOUND, index, space)
 		end
 		
-		local prev_shard_id = self.schema:prev(space, index, tuple)
+		local prev_shard_id = self.schema:prev(space, self.shard_index, tuple)
 		if self.pool:curr_is_me_leader_by(shard_id) and self.pool:prev_is_me_leader_by(prev_shard_id) then
 			return __insert(box, space, tuple)
 		end
@@ -605,7 +606,7 @@ function raftshard._replace(ttl, space, index, tuple)
 	
 	ttl = tonumber(ttl)
 	
-	local shard_id = self.schema:curr(space, index, tuple)
+	local shard_id = self.schema:curr(space, self.shard_index, tuple)
 	
 	if self.pool:curr_is_me_leader_by(shard_id) then
 		return __replace(box, space, tuple)
